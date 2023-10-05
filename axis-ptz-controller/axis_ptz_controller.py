@@ -896,7 +896,7 @@ class AxisPtzController(BaseMQTTPubSub):
             )
 
             out_json = self.generate_payload_json(
-                push_timestamp=str(int(datetime.utcnow().timestamp())),
+                push_timestamp=datetime.utcnow().timestamp(),
                 device_type="Collector",
                 id_=self.hostname,
                 deployment_id=f"AISonobuoy-Arlington-{self.hostname}",
