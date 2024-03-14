@@ -3,6 +3,7 @@ method for making AxisPtzController instances. Instatiates an
 AxisPtzController, and executes its main() method when run as a
 module.
 """
+
 import ast
 from datetime import datetime
 import json
@@ -65,9 +66,7 @@ class AxisPtzController(BaseMQTTPubSub):
         tilt_rate_max: float = 150.0,
         zoom: int = 2000,
         focus: int = 60,
-        focus_slope: float = 0.0006,
-        focus_intercept: float = 54.0,
-        focus_min: int = 5555,
+        focus_min: int = 7499,
         focus_max: int = 9999,
         jpeg_resolution: str = "1920x1080",
         jpeg_compression: int = 5,
@@ -143,10 +142,6 @@ class AxisPtzController(BaseMQTTPubSub):
             Camera zoom level [0-9999]
         focus: int
             Camera focus level [0-100%]
-        focus_slope: float
-            Focus slope from measurement [%/m]
-        focus_intercept: float
-            Focus intercept from measurement [%]
         focus_min: int
             Focus minimum from settings
         focus_max: int
@@ -206,8 +201,6 @@ class AxisPtzController(BaseMQTTPubSub):
         self.tilt_rate_max = tilt_rate_max
         self.zoom = zoom
         self.focus = focus
-        self.focus_slope = focus_slope
-        self.focus_intercept = focus_intercept
         self.focus_min = focus_min
         self.focus_max = focus_max
         self.jpeg_resolution = jpeg_resolution
@@ -309,9 +302,19 @@ class AxisPtzController(BaseMQTTPubSub):
         self.delta_rho_dot_c = 0.0  # [deg/s]
         self.delta_tau_dot_c = 0.0  # [deg/s]
 
+        # Camera focus parameters. Note that the focus setting is
+        # minimum at and greater than the hyperfocal distance, and the
+        # focus setting is maximum when the distance is zero.
+        d_hyperfocal = 100000
+        self.focus_slope = (self.focus_min - self.focus_max) / d_hyperfocal
+        self.focus_intercept = self.focus_max
+
         # Capture boolean and last capture time
         self.do_capture = False
         self.capture_time = 0.0
+
+        # Always make capture directory
+        os.makedirs(self.capture_dir, exist_ok=True)
 
         # Initialize tripod position in the geocentric (XYZ)
         # coordinate system, orthogonal transformation matrix from
@@ -342,7 +345,6 @@ class AxisPtzController(BaseMQTTPubSub):
         )
         self._config_callback(None, None, config_msg)
 
-        os.makedirs(self.capture_dir, exist_ok=True)
         # Initialize the rotations from the geocentric (XYZ)
         # coordinate system to the camera housing fixed (uvw)
         # coordinate system
@@ -497,8 +499,6 @@ class AxisPtzController(BaseMQTTPubSub):
         self.tilt_rate_max = config.get("tilt_rate_max", self.tilt_rate_max)
         self.zoom = config.get("zoom", self.zoom)  # [0-9999]
         self.focus = config.get("focus", self.focus)  # [0-100%]
-        self.focus_slope = config.get("focus_slope", self.focus_slope)
-        self.focus_intercept = config.get("focus_intercept", self.focus_intercept)
         self.focus_min = config.get("focus_min", self.focus_min)
         self.focus_max = config.get("focus_max", self.focus_max)
         self.jpeg_resolution = config.get("jpeg_resolution", self.jpeg_resolution)
@@ -564,8 +564,6 @@ class AxisPtzController(BaseMQTTPubSub):
             "tilt_rate_max": self.tilt_rate_max,
             "zoom": self.zoom,
             "focus": self.focus,
-            "focus_slope": self.focus_slope,
-            "focus_intercept": self.focus_intercept,
             "focus_min": self.focus_min,
             "focus_max": self.focus_max,
             "jpeg_resolution": self.jpeg_resolution,
@@ -882,12 +880,29 @@ class AxisPtzController(BaseMQTTPubSub):
         # rates, and begin capturing images, if needed
         if self.use_camera:
             if not self.auto_focus:
+                # Note that the focus setting cannot be negative,
+                # since distance3d is non-negative.
+                focus_setting = int(
+                    max(
+                        self.focus_min,
+                        self.focus_slope * self.distance3d + self.focus_intercept,
+                    )
+                )
                 self.focus = int(
-                    (self.focus_max - self.focus_min)
-                    * (self.focus_slope * self.distance3d + self.focus_intercept)
-                    / 100.0
-                    + self.focus_min
-                )  # [%]
+                    100
+                    * (focus_setting - self.focus_min)
+                    / (self.focus_max - self.focus_min)
+                )
+
+                # TODO: Remove
+                logging.info(f"self.focus_min: {self.focus_min}")
+                logging.info(f"self.focus_max: {self.focus_max}")
+                logging.info(f"self.focus_slope: {self.focus_slope}")
+                logging.info(f"self.focus_intercept: {self.focus_intercept}")
+                logging.info(f"self.distance_3d: {self.distance3d}")
+                logging.info(f"focus_setting: {focus_setting}")
+                logging.info(f"self.focus: {self.focus}")
+
                 logging.debug(f"Commanding focus: {self.focus}")
                 try:
                     self.camera_control.set_focus(self.focus)
@@ -1315,8 +1330,6 @@ def make_controller() -> AxisPtzController:
         tilt_rate_max=float(os.environ.get("TILT_RATE_MAX", 150.0)),
         zoom=int(os.environ.get("ZOOM", 2000)),
         focus=int(os.environ.get("FOCUS", 60)),
-        focus_slope=float(os.environ.get("FOCUS_SLOPE", 0.0006)),
-        focus_intercept=float(os.environ.get("FOCUS_INTERCEPT", 54)),
         focus_min=int(os.environ.get("FOCUS_MIN", 5555)),
         focus_max=int(os.environ.get("FOCUS_MAX", 9999)),
         jpeg_resolution=os.environ.get("JPEG_RESOLUTION", "1920x1080"),
